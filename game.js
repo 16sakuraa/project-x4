@@ -112,8 +112,9 @@ let shieldHP = 3;
 let shieldCooldownTimer = 0;
 let activeShields = []; // For twin throw logic {mesh, dir, bouncesLeft, hits[]}
 
-let upgrades = { pierce: false, bounce: false, hollow: false, twin: false, stasis: false, infinite: false };
+let upgrades = { pierce: false, bounce: false, hollow: false, twin: false, stasis: false, infinite: false, haste: 0, blast: false };
 let currentChoices = [];
+let playerDamageBuffTimer = 0;
 
 document.addEventListener('contextmenu', e => e.preventDefault()); // Prevent normal right click menu
 
@@ -198,6 +199,8 @@ function selectUpgrade(index) {
     } else if (choice.id === 'ammo_cache') {
         totalAmmo += 50;
         ammoDisplay.innerText = `Ammo: ${ammo}/${maxAmmo} | ${totalAmmo}`;
+    } else if (choice.id === 'haste') {
+        upgrades.haste += 1;
     } else {
         upgrades[choice.id] = true;
     }
@@ -272,7 +275,7 @@ const onKeyDown = (event) => {
                     activeShields.push({
                         mesh: clone,
                         dir: dir,
-                        bouncesLeft: upgrades.bounce ? 1 : 0,
+                        bouncesLeft: (upgrades.bounce ? 1 : 0) + upgrades.haste,
                         hits: []
                     });
                 }
@@ -473,6 +476,21 @@ function playReloadSound() {
     playClick(0.4);
 }
 
+function playParrySound() {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1500, audioCtx.currentTime); 
+    osc.frequency.exponentialRampToValueAtTime(3000, audioCtx.currentTime + 0.1); // High pitched ping
+    gainNode.gain.setValueAtTime(0.6, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.2);
+}
+
 // ---- HEALTH PACKS ----
 const healthPacks = [];
 const healthPackGeometry = new THREE.BoxGeometry(0.4, 0.4, 0.4);
@@ -486,42 +504,57 @@ const ammoPackMaterial = new THREE.MeshStandardMaterial({ color: 0x4444ff, emiss
 const enemies = [];
 const enemyGeometry = new THREE.BoxGeometry(1.2, 2.0, 1.2);
 const enemyMaterialTemplate = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x333333 });
+const enemyProjectiles = [];
+const projGeometry = new THREE.SphereGeometry(0.3, 8, 8);
+const projMaterial = new THREE.MeshStandardMaterial({ color: 0xff00ff, emissive: 0xff00ff, emissiveIntensity: 0.8 });
 
 function spawnEnemy() {
     let i = Math.floor(Math.random() * mapGrid.length);
     let j = Math.floor(Math.random() * mapGrid[0].length);
 
-    // Naively avoid spawning on walls
-    while (mapGrid[i][j] === 1) {
+    // Naively avoid spawning on walls or in center
+    while (mapGrid[i][j] === 1 || (i > mapGrid.length/2 - 3 && i < mapGrid.length/2 + 3 && j > mapGrid[0].length/2 - 3 && j < mapGrid[0].length/2 + 3)) {
         i = Math.floor(Math.random() * mapGrid.length);
         j = Math.floor(Math.random() * mapGrid[0].length);
     }
 
     let hp = 1;
-    let color = 0xff0000; // Red
+    let color = 0xff0000; // Red (Basic)
     let armored = false;
+    let type = 'basic';
+    let scale = 1.0;
 
     if (currentRound > 2) {
         const rand = Math.random();
         if (rand > 0.8) {
-            hp = 2;
-            color = 0xffff00; // Yellow (Armored)
-            armored = true;
+            type = 'brute';
+            hp = 50;
+            color = 0x4a2a18; // Brown
+            scale = 1.5;
         } else if (rand > 0.6) {
+            type = 'artillery';
             hp = 3;
-            color = 0x0000ff; // Blue
+            color = 0xff00ff; // Magenta
         } else if (rand > 0.4) {
+            type = 'ambusher';
             hp = 2;
-            color = 0x00ff00; // Green
+            color = 0x800080; // Purple
+        } else if (rand > 0.2) {
+            type = 'basic';
+            hp = 2;
+            color = 0xffff00; // Yellow (Armored Basic)
+            armored = true;
         }
     } else if (currentRound > 1) {
         const rand = Math.random();
-        if (rand > 0.8) {
-            hp = 3;
-            color = 0x0000ff; // Blue
-        } else if (rand > 0.4) {
+        if (rand > 0.6) {
+            type = 'ambusher';
             hp = 2;
-            color = 0x00ff00; // Green
+            color = 0x800080; // Purple
+        } else if (rand > 0.3) {
+            type = 'artillery';
+            hp = 2;
+            color = 0xff00ff; // Magenta
         }
     }
 
@@ -529,14 +562,27 @@ function spawnEnemy() {
     mat.color.setHex(color);
 
     const enemy = new THREE.Mesh(enemyGeometry, mat);
+    enemy.scale.setScalar(scale);
     enemy.position.x = (j * tileSize) - (mapGrid[0].length * tileSize / 2);
-    enemy.position.y = 1; // floating slightly
+    enemy.position.y = scale; // floating slightly based on scale
     enemy.position.z = (i * tileSize) - (mapGrid.length * tileSize / 2);
     enemy.castShadow = true;
     enemy.receiveShadow = true;
 
-    // Enemy data for simple animations and hp
-    enemy.userData = { offset: Math.random() * Math.PI * 2, hp: hp, armored: armored, slowTimer: 0 };
+    // FSM State and Archetype data
+    enemy.userData = { 
+        type: type,
+        state: 'chase',
+        offset: Math.random() * Math.PI * 2, 
+        hp: hp, 
+        armored: armored, 
+        slowTimer: 0,
+        staggerGauge: 0,
+        staggerTimer: 0,
+        attackCooldown: 0,
+        baseColor: color,
+        strafeDir: Math.random() > 0.5 ? 1 : -1
+    };
 
     scene.add(enemy);
     enemies.push(enemy);
@@ -572,17 +618,40 @@ function reload() {
 }
 
 function damageEnemy(enemy, amount, isShieldHit) {
-    if (enemy.userData.armored) {
-        if (!isShieldHit) {
-            // Deflected
-            playReloadSound(); // Use mechanical clip sound as an armor block sound
+    if (enemy.userData.type === 'brute') {
+        if (isShieldHit) {
+            enemy.userData.staggerGauge++;
+            if (enemy.userData.staggerGauge >= 3) {
+                enemy.userData.state = 'staggered';
+                enemy.userData.staggerTimer = 3.0; // 3 second stun window
+                enemy.material.color.setHex(0xffffff); // Flash White!
+                enemy.material.emissive.setHex(0xaaaaaa);
+                playHitSound(); // Critical shatter sound
+                return;
+            }
+            playReloadSound(); // Heavy clank, no damage
             return;
         } else {
-            // Armor Break!
-            enemy.userData.armored = false;
-            enemy.material.color.setHex(0x00ff00); // Expose green underlying health
-            playHitSound();
-            return; // Shield strips armor but deals no actual HP damage this hit
+            // Gun damage to a Brute
+            if (enemy.userData.state === 'staggered') {
+                amount = 15; // Critical Damage!
+            } else {
+                amount = 1; // Bullet sponge normally
+            }
+        }
+    } else {
+        if (enemy.userData.armored) {
+            if (!isShieldHit) {
+                // Deflected
+                playReloadSound(); // Use mechanical clip sound as an armor block sound
+                return;
+            } else {
+                // Armor Break!
+                enemy.userData.armored = false;
+                enemy.material.color.setHex(0x00ff00); // Expose green underlying health
+                playHitSound();
+                return; // Shield strips armor but deals no actual HP damage this hit
+            }
         }
     }
     
@@ -597,7 +666,7 @@ function damageEnemy(enemy, amount, isShieldHit) {
     playHitSound();
 
     if (enemy.userData.hp <= 0) {
-        if (isShieldHit) {
+        if (isShieldHit && enemy.userData.type !== 'brute') {
             // Guaranteed Ammo Drop via Shield
             const pack = new THREE.Mesh(ammoPackGeometry, ammoPackMaterial);
             pack.position.copy(enemy.position);
@@ -626,13 +695,21 @@ function damageEnemy(enemy, amount, isShieldHit) {
             isUpgradeScreenOpen = true;
             controls.unlock();
             upgradeScreen.style.display = 'flex';
+            
+            // Wipe remnants
+            for (let p of enemyProjectiles) {
+                scene.remove(p.mesh);
+            }
+            enemyProjectiles.length = 0;
         }
     } else {
-        // Adjust color based on remaining HP
-        if (enemy.userData.hp === 2) {
-            enemy.material.color.setHex(0x00ff00); // Green
-        } else if (enemy.userData.hp === 1) {
-            enemy.material.color.setHex(0xff0000); // Red
+        // Adjust color based on remaining HP (excluding brute)
+        if (enemy.userData.type !== 'brute') {
+            if (enemy.userData.hp === 2) {
+                enemy.material.color.setHex(0x00ff00); // Green
+            } else if (enemy.userData.hp === 1 && !enemy.userData.armored) {
+                enemy.material.color.setHex(0xff0000); // Red
+            }
         }
     }
 }
@@ -643,9 +720,13 @@ function generateUpgradeChoices() {
         { id: 'bounce', name: 'Shield Bounce' },
         { id: 'hollow', name: 'Hollow Point' },
         { id: 'twin', name: 'Twin Throw' },
-        { id: 'stasis', name: 'Stasis Coating' }
+        { id: 'stasis', name: 'Stasis Coating' },
+        { id: 'blast', name: 'Blast Shield' }
     ];
     let pool = allUpgrades.filter(u => !upgrades[u.id]);
+    
+    // Stackable upgrades are always available
+    pool.push({ id: 'haste', name: `Shield Haste (Lvl Level ${upgrades.haste + 1})` });
     
     if (!upgrades.infinite && Math.random() < 0.05) {
         pool.push({ id: 'infinite', name: 'Infinite Ammo (LEGENDARY)' });
@@ -698,7 +779,7 @@ function shoot() {
     playShootSound();
 
     if (intersects.length > 0) {
-        const damage = upgrades.hollow ? 2 : 1;
+        const damage = (upgrades.hollow ? 2 : 1) * (playerDamageBuffTimer > 0 ? 2 : 1);
         const hitSet = new Set();
         
         for (let k = 0; k < intersects.length; k++) {
@@ -763,26 +844,147 @@ function animate() {
         const delta = (time - prevTime) / 1000;
         const controlObj = controls.getObject();
 
+        if (playerDamageBuffTimer > 0) {
+            playerDamageBuffTimer -= delta;
+        }
+
         // Enemy chasing logic & animations
         const playerPos = controlObj.position.clone();
         let baseSpeed = 2.0 + (currentRound * 0.5); // Enemies get faster
 
+        // Resolve Enemy Projectiles Loop
+        for (let i = enemyProjectiles.length - 1; i >= 0; i--) {
+            const proj = enemyProjectiles[i];
+            proj.mesh.position.addScaledVector(proj.dir, 15 * delta); // Slow 15 units p/s
+            
+            // Collision with Map or Player
+            if (checkCollision(proj.mesh.position)) {
+                scene.remove(proj.mesh);
+                enemyProjectiles.splice(i, 1);
+            } else if (proj.mesh.position.distanceTo(playerPos) < 1.0) {
+                if (hasShield && shieldState === 'blocking') {
+                    // PARRY TRIGGERED!
+                    scene.remove(proj.mesh);
+                    enemyProjectiles.splice(i, 1);
+                    playParrySound();
+                    
+                    ammo = maxAmmo;
+                    ammoDisplay.innerText = `Ammo: ${upgrades.infinite ? '∞' : ammo + '/' + maxAmmo + ' | ' + totalAmmo}`;
+                    playerDamageBuffTimer = 5.0; // 5 seconds of DOUBLE damage
+                    
+                    scene.background = new THREE.Color(0x00aaff); // Bright Cyan
+                    setTimeout(() => scene.background = new THREE.Color(0x220000), 100);
+
+                    // Blast Shield trigger
+                    if (upgrades.blast) {
+                        enemies.forEach(ae => {
+                            if (ae.position.distanceTo(playerPos) < 15) {
+                                ae.userData.state = 'staggered';
+                                ae.userData.staggerTimer = 3.0;
+                                ae.material.color.setHex(0xffffff); // Flash White!
+                                ae.material.emissive.setHex(0xaaaaaa);
+                            }
+                        });
+                    }
+                } else {
+                    // Hit Player!
+                    scene.remove(proj.mesh);
+                    enemyProjectiles.splice(i, 1);
+                    playerHP -= 10;
+                    hpDisplay.innerText = `HP: ${playerHP}/100`;
+                    scene.background = new THREE.Color(0xaa0000);
+                    setTimeout(() => scene.background = new THREE.Color(0x220000), 100);
+                    playHitSound();
+
+                    if (playerHP <= 0) {
+                        playerHP = 0;
+                        hpDisplay.innerText = `HP: 0/100`;
+                        isGameOver = true;
+                        controls.unlock();
+                        gameOverScreen.style.display = 'flex';
+                        finalScoreDisplay.innerText = `Final Score: ${score} - Reached Round: ${currentRound}`;
+                    }
+                }
+            }
+        }
+
         enemies.forEach(e => {
-            // Keep enemy upright but target player visually
+            // State Independent LookAt
             const targetPos = playerPos.clone();
             targetPos.y = e.position.y;
             e.lookAt(targetPos);
 
-            // Vector math for absolute movement towards player
-            const moveDir = new THREE.Vector3().subVectors(targetPos, e.position).normalize();
+            const dist = e.position.distanceTo(playerPos);
+            const toPlayerVec = new THREE.Vector3().subVectors(targetPos, e.position).normalize();
             
+            // ---- FSM LOGIC DELEGATION ----
+            if (e.userData.type === 'brute' && e.userData.state === 'staggered') {
+                e.userData.staggerTimer -= delta;
+                if (e.userData.staggerTimer <= 0) {
+                    e.userData.state = 'chase';
+                    e.userData.staggerGauge = 0;
+                    e.material.color.setHex(e.userData.baseColor); // Revert brown
+                    e.material.emissive.setHex(0x333333);
+                }
+                return; // Staggered brutes do not move or attack
+            } else if (e.userData.type === 'artillery') {
+                if (dist < 10) e.userData.state = 'flee';
+                else if (dist > 18) e.userData.state = 'chase';
+                else e.userData.state = 'attack';
+            } else if (e.userData.type === 'ambusher') {
+                e.userData.state = 'chase'; // default
+                // Player looking at it Ray Check (Dot product)
+                const playerLookDir = new THREE.Vector3();
+                camera.getWorldDirection(playerLookDir);
+                const enemyDir = new THREE.Vector3().subVectors(e.position, playerPos).normalize();
+                const dot = playerLookDir.dot(enemyDir);
+                
+                // If closely in view and far enough to maneuver, strafe!
+                if (dot > 0.85 && dist > 5) {
+                    e.userData.state = 'strafe';
+                }
+            } else {
+                e.userData.state = 'chase'; // Basic & Brute
+            }
+            
+            // FSM Actions
+            let moveDir = new THREE.Vector3();
             let applySpeed = baseSpeed;
+            
+            if (e.userData.type === 'ambusher') applySpeed *= 1.8; // Fast flankers
+            if (e.userData.type === 'brute') applySpeed *= 0.6; // Slow lumbering tanks
+
             if (e.userData.slowTimer > 0) {
                 applySpeed *= 0.5; // Stasis applied
                 e.userData.slowTimer -= delta;
             }
 
-            // Attempt movement components independently
+            if (e.userData.state === 'chase') {
+                moveDir.copy(toPlayerVec);
+            } else if (e.userData.state === 'flee') {
+                moveDir.copy(toPlayerVec).negate(); // Move directly backwards
+            } else if (e.userData.state === 'strafe') {
+                // Strafe perpendicular to player look vector
+                moveDir.set(-toPlayerVec.z * e.userData.strafeDir, 0, toPlayerVec.x * e.userData.strafeDir).normalize();
+            } else if (e.userData.state === 'attack') {
+                e.userData.attackCooldown -= delta;
+                if (e.userData.attackCooldown <= 0) {
+                    e.userData.attackCooldown = 3.0; // 3 seconds per barrage
+                    // Spawn Projectile
+                    const proj = new THREE.Mesh(projGeometry, projMaterial);
+                    proj.position.copy(e.position);
+                    proj.position.y += 0.5; // Eye level loosely
+                    scene.add(proj);
+                    enemyProjectiles.push({
+                        mesh: proj,
+                        dir: toPlayerVec.clone()
+                    });
+                }
+                // Do not move while strictly in Artillery attack state
+                applySpeed = 0; 
+            }
+
+            // Attempt movement components independently (Sliding Collision)
             const oldEX = e.position.x;
             const oldEZ = e.position.z;
 
@@ -799,8 +1001,8 @@ function animate() {
             // Simple bobbing effect
             e.position.y = 1 + Math.sin(time / 400 + e.userData.offset) * 0.3;
 
-            // Damage collision check
-            const dist = e.position.distanceTo(playerPos);
+            // Damage collision check (Melee Hit)
+            if (e.userData.type === 'artillery') return; // Artillery does not deal touch damage
             
             // Prevention of clipping: hide the enemy if it gets right up in your face
             e.visible = dist > 1.25;
@@ -928,7 +1130,7 @@ function animate() {
                     shieldUiDisplay.innerText = `Shield: Cooldown (${shieldCooldownTimer.toFixed(1)}s)`;
                 }
             } else if (shieldState === 'thrown' || shieldState === 'returning') {
-                const moveDist = 40 * delta;
+                const moveDist = 40 * (1 + (0.4 * upgrades.haste)) * delta;
                 
                 // Track remaining returning shields
                 let livingShieldsCount = activeShields.length;
@@ -977,7 +1179,7 @@ function animate() {
                         }
                     } else if (shieldState === 'returning') {
                         const returnDir = new THREE.Vector3().subVectors(playerPos, currentShield.mesh.position).normalize();
-                        currentShield.mesh.position.addScaledVector(returnDir, 50 * delta); // Fly back faster
+                        currentShield.mesh.position.addScaledVector(returnDir, 50 * (1 + (0.4 * upgrades.haste)) * delta); // Fly back faster
                         
                         if (currentShield.mesh.position.distanceTo(playerPos) < 1.0) {
                             scene.remove(currentShield.mesh);

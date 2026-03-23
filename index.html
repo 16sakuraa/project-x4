@@ -28,7 +28,6 @@
                 <p>E: Throw Boomerang Shield</p>
                 <p>W, A, S, D: Move</p>
                 <p>R: Reload</p>
-                <p>B: Open Market / Upgrades</p>
             </div>
         </div>
         <div id="game-over" class="overlay" style="display:none;">
@@ -38,15 +37,16 @@
                 <p class="controls">Refresh page to restart</p>
             </div>
         </div>
-        <div id="market-screen" class="overlay" style="display:none;">
+        <div id="upgrade-screen" class="overlay" style="display:none;">
             <div class="menu-box">
-                <h1>MARKET</h1>
-                <p class="controls">[ 1 ] Buy 30 Ammo - 50 Score</p>
-                <p class="controls" id="upgrade-text">[ 2 ] Weapon Upgrade - 250 Score</p>
-                <p class="controls" id="shield-buy-text">[ 3 ] Shield Bounce Upgrade - 300 Score</p>
-                <p style="margin-top: 30px;">Click anywhere to resume</p>
+                <h1>ROUND COMPLETE</h1>
+                <p>Choose an Upgrade to Continue:</p>
+                <p class="controls" id="choice-1-text">[ 1 ] </p>
+                <p class="controls" id="choice-2-text">[ 2 ] </p>
+                <p class="controls" id="choice-3-text">[ 3 ] </p>
             </div>
         </div>
+        <div id="round-timer" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); pointer-events:none; font-family:'Courier New', monospace; font-size:120px; color:#ffaaaa; font-weight:bold; text-shadow: 0 0 20px #ff0000; z-index:20;">3</div>
         <div id="hud">
             <div id="hp">HP: 100/100</div>
             <div id="shield-ui">Shield: 3/3</div>

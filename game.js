@@ -96,42 +96,41 @@ const shieldUiDisplay = document.getElementById('shield-ui');
 const roundDisplay = document.getElementById('round');
 const gameOverScreen = document.getElementById('game-over');
 const finalScoreDisplay = document.getElementById('final-score');
-const marketScreen = document.getElementById('market-screen');
-const upgradeText = document.getElementById('upgrade-text');
-const shieldBuyText = document.getElementById('shield-buy-text');
+const upgradeScreen = document.getElementById('upgrade-screen');
+const choice1Text = document.getElementById('choice-1-text');
+const choice2Text = document.getElementById('choice-2-text');
+const choice3Text = document.getElementById('choice-3-text');
+const roundTimerDisplay = document.getElementById('round-timer');
 
 let isGameOver = false;
-let isMarketOpen = false;
+let isUpgradeScreenOpen = false;
 
 // ---- SHIELD STATE ----
 let hasShield = true;
 let shieldState = 'idle'; // 'idle', 'blocking', 'thrown', 'returning', 'cooldown'
 let shieldHP = 3;
 let shieldCooldownTimer = 0;
-let shieldThrowDir = new THREE.Vector3();
-let shieldHits = [];
-let shieldBouncesUnlocked = false;
-let shieldBouncesLeft = 0;
+let activeShields = []; // For twin throw logic {mesh, dir, bouncesLeft, hits[]}
+
+let upgrades = { pierce: false, bounce: false, hollow: false, twin: false, stasis: false, infinite: false };
+let currentChoices = [];
 
 document.addEventListener('contextmenu', e => e.preventDefault()); // Prevent normal right click menu
 
 blockMenu.addEventListener('click', () => {
-    if (!isGameOver && !isMarketOpen) controls.lock();
+    if (!isGameOver && !isUpgradeScreenOpen) controls.lock();
 });
 
-marketScreen.addEventListener('click', () => {
-    // Clicking the market box locks controls and closes market
-    if (!isGameOver) controls.lock();
+upgradeScreen.addEventListener('click', () => {
+    // Cannot bypass upgrade screen by clicking, force them to choose
 });
 
 controls.addEventListener('lock', () => {
     blockMenu.style.display = 'none';
-    marketScreen.style.display = 'none';
-    isMarketOpen = false;
 });
 
 controls.addEventListener('unlock', () => {
-    if (!isGameOver && !isMarketOpen) {
+    if (!isGameOver && !isUpgradeScreenOpen) {
         blockMenu.style.display = 'flex';
         scoreDisplay.innerText = `Score: ${score}`;
     }
@@ -149,35 +148,73 @@ let canJump = false;
 const velocity = new THREE.Vector3();
 const direction = new THREE.Vector3();
 
-const onKeyDown = (event) => {
-    if (isMarketOpen) {
-        if (event.code === 'Digit1') {
-            if (score >= 50) {
-                score -= 50;
-                totalAmmo += 30;
-                scoreHud.innerText = `Score: ${score}`;
-                ammoDisplay.innerText = `Ammo: ${ammo}/${maxAmmo} | ${totalAmmo}`;
-            }
-        } else if (event.code === 'Digit2') {
-            if (score >= 250 && !weaponUpgraded) {
-                score -= 250;
-                weaponUpgraded = true;
-                maxAmmo = 20;
-                ammo = 20; // Free refill on upgrade
-                barrelMat.color.setHex(0x2244aa); // Change gun color to blue
-                upgradeText.innerText = "[ 2 ] Weapon Upgrade - MAXED OUT";
-                scoreHud.innerText = `Score: ${score}`;
-                ammoDisplay.innerText = `Ammo: ${ammo}/${maxAmmo} | ${totalAmmo}`;
-            }
-        } else if (event.code === 'Digit3') {
-            if (score >= 300 && !shieldBouncesUnlocked) {
-                score -= 300;
-                shieldBouncesUnlocked = true;
-                shieldBuyText.innerText = "[ 3 ] Shield Bounce - PURCHASED";
-                scoreHud.innerText = `Score: ${score}`;
-            }
+// ---- ROUND TRANSITIONS ----
+function startCountdown() {
+    isUpgradeScreenOpen = false;
+    upgradeScreen.style.display = 'none';
+    roundTimerDisplay.style.display = 'block';
+    let count = 3;
+    roundTimerDisplay.innerText = count;
+    playReloadSound();
+
+    const interval = setInterval(() => {
+        count--;
+        if (count <= 0) {
+            clearInterval(interval);
+            roundTimerDisplay.style.display = 'none';
+            controls.lock(); // Re-lock controls
+            startNextRound();
+        } else {
+            roundTimerDisplay.innerText = count;
+            playReloadSound();
         }
-        return; // Don't process movement keys while in market
+    }, 1000);
+}
+
+function startNextRound() {
+    currentRound++;
+    roundDisplay.innerText = `Round: ${currentRound}`;
+    
+    // Re-scale the maze dynamically
+    currentMazeSize += 5;
+    buildMaze(currentMazeSize);
+    
+    // Re-center player smoothly into the newly rebuilt safe zone
+    controls.getObject().position.set(0, 1.6, 0);
+
+    for (let i = 0; i < currentRound * 3; i++) {
+        spawnEnemy();
+    }
+}
+
+function selectUpgrade(index) {
+    if (index >= currentChoices.length) return;
+    const choice = currentChoices[index];
+    
+    // Handle Consumables or Upgrades
+    if (choice.id === 'heal') {
+        playerHP = 100;
+        hpDisplay.innerText = `HP: ${playerHP}/100`;
+    } else if (choice.id === 'ammo_cache') {
+        totalAmmo += 50;
+        ammoDisplay.innerText = `Ammo: ${ammo}/${maxAmmo} | ${totalAmmo}`;
+    } else {
+        upgrades[choice.id] = true;
+    }
+    
+    const uiTexts = [choice1Text, choice2Text, choice3Text];
+    uiTexts[index].innerText += " - (SELECTED)";
+    startCountdown();
+}
+
+const onKeyDown = (event) => {
+    if (isUpgradeScreenOpen) {
+        switch (event.code) {
+        case 'Digit1': selectUpgrade(0); break;
+        case 'Digit2': selectUpgrade(1); break;
+        case 'Digit3': selectUpgrade(2); break;
+        }
+        return; // Don't process movement keys while picking upgrade
     }
 
     switch (event.code) {
@@ -202,28 +239,43 @@ const onKeyDown = (event) => {
             canJump = false;
             break;
         case 'KeyR':
-            if (controls.isLocked) reload();
-            break;
-        case 'KeyB':
-            if (!isGameOver && controls.isLocked) {
-                isMarketOpen = true;
-                marketScreen.style.display = 'flex';
-                controls.unlock();
-            }
+            if (controls.isLocked && !upgrades.infinite) reload();
             break;
         case 'KeyE':
             if (controls.isLocked && hasShield && shieldState === 'idle') {
                 shieldState = 'thrown';
-                shieldHits = [];
-                shieldBouncesLeft = shieldBouncesUnlocked ? 1 : 0;
+                shieldGroup.visible = false; // Hide attached model, use free projectiles
+                activeShields = [];
                 
-                // Move from camera local to scene world
-                camera.remove(shieldGroup);
-                scene.add(shieldGroup);
-                shieldGroup.position.copy(controls.getObject().position);
-                shieldGroup.position.y -= 0.2; // Start throw slightly below eye level
-                shieldGroup.rotation.set(-Math.PI / 2, 0, 0); // Flat like a frisbee
-                camera.getWorldDirection(shieldThrowDir);
+                const throwDirs = [];
+                
+                if (upgrades.twin) {
+                    camera.getWorldDirection(direction);
+                    const eulerL = new THREE.Euler(0, 15 * THREE.MathUtils.DEG2RAD, 0);
+                    const eulerR = new THREE.Euler(0, -15 * THREE.MathUtils.DEG2RAD, 0);
+                    const dirL = direction.clone().applyEuler(eulerL);
+                    const dirR = direction.clone().applyEuler(eulerR);
+                    throwDirs.push(dirL, dirR);
+                } else {
+                    camera.getWorldDirection(direction);
+                    throwDirs.push(direction.clone());
+                }
+                
+                for (let dir of throwDirs) {
+                    const clone = shieldGroup.clone();
+                    scene.add(clone);
+                    clone.position.copy(controls.getObject().position);
+                    clone.position.y -= 0.2;
+                    clone.rotation.set(-Math.PI / 2, 0, 0);
+                    clone.visible = true;
+                    
+                    activeShields.push({
+                        mesh: clone,
+                        dir: dir,
+                        bouncesLeft: upgrades.bounce ? 1 : 0,
+                        hits: []
+                    });
+                }
             }
             break;
     }
@@ -277,46 +329,78 @@ document.addEventListener('keydown', onKeyDown);
 document.addEventListener('keyup', onKeyUp);
 
 // ---- MAP GENERATION ----
-// 1 = Wall, 0 = Floor
-const mapGrid = [
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-    [1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1],
-    [1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1],
-    [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1],
-    [1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1],
-    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1],
-    [1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1],
-    [1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1],
-    [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],
-    [1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1],
-    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-];
+// Procedurally generates a walled grid with random pillars
+function generateMap(width, height) {
+    const grid = [];
+    for (let i = 0; i < height; i++) {
+        const row = [];
+        for (let j = 0; j < width; j++) {
+            // Border walls
+            if (i === 0 || i === height - 1 || j === 0 || j === width - 1) {
+                row.push(1);
+            } else {
+                // Random pillars (15% chance)
+                row.push(Math.random() < 0.15 ? 1 : 0);
+            }
+        }
+        grid.push(row);
+    }
+    
+    // Clear out a 5x5 center spawn area so the player isn't trapped
+    const cy = Math.floor(height / 2);
+    const cx = Math.floor(width / 2);
+    for (let i = cy - 2; i <= cy + 2; i++) {
+        for (let j = cx - 2; j <= cx + 2; j++) {
+            grid[i][j] = 0;
+        }
+    }
+    return grid;
+}
 
 const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9 });
 const wallGeometry = new THREE.BoxGeometry(2, 4, 2);
+
 const walls = [];
+let currentMazeSize = 10;
+let mapGrid = [];
 const tileSize = 2; // Size of each block
 
-for (let i = 0; i < mapGrid.length; i++) {
-    for (let j = 0; j < mapGrid[i].length; j++) {
-        if (mapGrid[i][j] === 1) {
-            const wall = new THREE.Mesh(wallGeometry, wallMaterial);
-            // Center the map at (0,0) roughly
-            wall.position.x = (j * tileSize) - (mapGrid[0].length * tileSize / 2);
-            wall.position.y = 2; // half height
-            wall.position.z = (i * tileSize) - (mapGrid.length * tileSize / 2);
-            wall.castShadow = true;
-            wall.receiveShadow = true;
-            scene.add(wall);
-            walls.push(wall);
+function buildMaze(size) {
+    // Clear old walls
+    for (const wall of walls) {
+        scene.remove(wall);
+        
+        // Clean up geometry and material memory
+        wall.geometry.dispose();
+        // Since we share one material we don't dispose it here, just remove the mesh
+    }
+    walls.length = 0;
+    
+    // 1 = Wall, 0 = Floor
+    mapGrid = generateMap(size, size);
+    
+    for (let i = 0; i < mapGrid.length; i++) {
+        for (let j = 0; j < mapGrid[i].length; j++) {
+            if (mapGrid[i][j] === 1) {
+                const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+                // Center the maze on 0,0
+                wall.position.x = (j * tileSize) - (mapGrid[0].length * tileSize / 2);
+                wall.position.z = (i * tileSize) - (mapGrid.length * tileSize / 2);
+                wall.position.y = 2; // half height
+                wall.castShadow = true;
+                wall.receiveShadow = true;
+                scene.add(wall);
+                walls.push(wall);
+            }
         }
     }
 }
 
+// Generate the initial Round 1 arena
+buildMaze(currentMazeSize);
+
 // Floor
-const floorGeometry = new THREE.PlaneGeometry(100, 100);
+const floorGeometry = new THREE.PlaneGeometry(200, 200);
 // create a checkerboard or concrete style
 const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x551111, roughness: 1 });
 const floor = new THREE.Mesh(floorGeometry, floorMaterial);
@@ -452,7 +536,7 @@ function spawnEnemy() {
     enemy.receiveShadow = true;
 
     // Enemy data for simple animations and hp
-    enemy.userData = { offset: Math.random() * Math.PI * 2, hp: hp, armored: armored };
+    enemy.userData = { offset: Math.random() * Math.PI * 2, hp: hp, armored: armored, slowTimer: 0 };
 
     scene.add(enemy);
     enemies.push(enemy);
@@ -501,6 +585,12 @@ function damageEnemy(enemy, amount, isShieldHit) {
             return; // Shield strips armor but deals no actual HP damage this hit
         }
     }
+    
+    if (isShieldHit && upgrades.stasis) {
+        enemy.userData.slowTimer = 3.0;
+        enemy.material.emissive.setHex(0x2244aa); // Visual slow feedback
+        setTimeout(() => enemy.material.emissive.setHex(0x333333), 3000);
+    }
 
     enemy.userData.hp -= amount;
     showHitMarker();
@@ -529,11 +619,13 @@ function damageEnemy(enemy, amount, isShieldHit) {
         enemies.splice(enemies.indexOf(enemy), 1);
         score += 10;
         scoreHud.innerText = `Score: ${score}`;
-
-        if (enemies.length === 0) {
-            currentRound++;
-            roundDisplay.innerText = `Round: ${currentRound}`;
-            spawnWave();
+        
+        // Round End Trigger
+        if (enemies.length === 0 && !isGameOver) {
+            generateUpgradeChoices();
+            isUpgradeScreenOpen = true;
+            controls.unlock();
+            upgradeScreen.style.display = 'flex';
         }
     } else {
         // Adjust color based on remaining HP
@@ -545,14 +637,51 @@ function damageEnemy(enemy, amount, isShieldHit) {
     }
 }
 
+function generateUpgradeChoices() {
+    const allUpgrades = [
+        { id: 'pierce', name: 'Piercing Rounds' },
+        { id: 'bounce', name: 'Shield Bounce' },
+        { id: 'hollow', name: 'Hollow Point' },
+        { id: 'twin', name: 'Twin Throw' },
+        { id: 'stasis', name: 'Stasis Coating' }
+    ];
+    let pool = allUpgrades.filter(u => !upgrades[u.id]);
+    
+    if (!upgrades.infinite && Math.random() < 0.05) {
+        pool.push({ id: 'infinite', name: 'Infinite Ammo (LEGENDARY)' });
+    }
+    
+    // Shuffle pool
+    for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    
+    currentChoices = pool.slice(0, 3);
+    
+    // Fill remaining with consumables
+    while (currentChoices.length < 3) {
+        if (!currentChoices.find(c => c.id === 'heal')) currentChoices.push({ id: 'heal', name: 'Full Heal (+100 HP)' });
+        else currentChoices.push({ id: 'ammo_cache', name: 'Ammo Cache (+50)' });
+    }
+    
+    choice1Text.innerText = `[ 1 ] ${currentChoices[0].name}`;
+    choice2Text.innerText = `[ 2 ] ${currentChoices[1].name}`;
+    choice3Text.innerText = `[ 3 ] ${currentChoices[2].name}`;
+}
+
 const raycaster = new THREE.Raycaster();
 
 function shoot() {
-    if (isReloading || ammo <= 0) return;
+    if (isReloading || (ammo <= 0 && !upgrades.infinite)) return;
 
     // Deduct ammo
-    ammo--;
-    ammoDisplay.innerText = `Ammo: ${ammo}/${maxAmmo} | ${totalAmmo}`;
+    if (!upgrades.infinite) {
+        ammo--;
+        ammoDisplay.innerText = `Ammo: ${ammo}/${maxAmmo} | ${totalAmmo}`;
+    } else {
+        ammoDisplay.innerText = `Ammo: ∞`;
+    }
 
     // Weapon kickback hook
     gunGroup.position.z += 0.1;
@@ -569,16 +698,25 @@ function shoot() {
     playShootSound();
 
     if (intersects.length > 0) {
-        const firstHit = intersects[0];
-        if (enemies.includes(firstHit.object)) {
-            const hitEnemy = firstHit.object;
-            const damage = weaponUpgraded ? 2 : 1;
-            damageEnemy(hitEnemy, damage, false); // bullet hit, not shield
+        const damage = upgrades.hollow ? 2 : 1;
+        const hitSet = new Set();
+        
+        for (let k = 0; k < intersects.length; k++) {
+            const hitObj = intersects[k].object;
+            
+            if (walls.includes(hitObj)) break; // Bullet physically stops at walls
+
+            if (enemies.includes(hitObj) && !hitSet.has(hitObj)) {
+                hitSet.add(hitObj);
+                damageEnemy(hitObj, damage, false);
+                
+                if (!upgrades.pierce) break; // Bullet normally stops at first enemy body
+            }
         }
     }
 
-    // Auto reload if emptied
-    if (ammo === 0) {
+    // Auto reload if emptied naturally
+    if (ammo === 0 && !upgrades.infinite) {
         reload();
     }
 }
@@ -627,7 +765,7 @@ function animate() {
 
         // Enemy chasing logic & animations
         const playerPos = controlObj.position.clone();
-        const currentSpeed = 2.0 + (currentRound * 0.5); // Enemies get faster
+        let baseSpeed = 2.0 + (currentRound * 0.5); // Enemies get faster
 
         enemies.forEach(e => {
             // Keep enemy upright but target player visually
@@ -637,17 +775,23 @@ function animate() {
 
             // Vector math for absolute movement towards player
             const moveDir = new THREE.Vector3().subVectors(targetPos, e.position).normalize();
+            
+            let applySpeed = baseSpeed;
+            if (e.userData.slowTimer > 0) {
+                applySpeed *= 0.5; // Stasis applied
+                e.userData.slowTimer -= delta;
+            }
 
             // Attempt movement components independently
             const oldEX = e.position.x;
             const oldEZ = e.position.z;
 
-            e.position.x += moveDir.x * currentSpeed * delta;
+            e.position.x += moveDir.x * applySpeed * delta;
             if (checkCollision(e.position)) {
                 e.position.x = oldEX; // Blocked along X
             }
 
-            e.position.z += moveDir.z * currentSpeed * delta;
+            e.position.z += moveDir.z * applySpeed * delta;
             if (checkCollision(e.position)) {
                 e.position.z = oldEZ; // Blocked along Z
             }
@@ -783,61 +927,77 @@ function animate() {
                 } else {
                     shieldUiDisplay.innerText = `Shield: Cooldown (${shieldCooldownTimer.toFixed(1)}s)`;
                 }
-            } else if (shieldState === 'thrown') {
-                const moveDist = 30 * delta;
-
-                // Penetrating Damage
-                enemies.forEach(e => {
-                    if (e.position.distanceTo(shieldGroup.position) < 1.5 && !shieldHits.includes(e)) {
-                        shieldHits.push(e);
-                        damageEnemy(e, 2, true); // Shield deals 2 base damage AND breaks armor
-                    }
-                });
-
-                // Ricochet Physics & Collision
-                const oldX = shieldGroup.position.x;
-                const oldZ = shieldGroup.position.z;
+            } else if (shieldState === 'thrown' || shieldState === 'returning') {
+                const moveDist = 40 * delta;
                 
-                shieldGroup.position.x += shieldThrowDir.x * moveDist;
-                const hitX = checkCollision(shieldGroup.position);
-                shieldGroup.position.x = oldX;
+                // Track remaining returning shields
+                let livingShieldsCount = activeShields.length;
 
-                shieldGroup.position.z += shieldThrowDir.z * moveDist;
-                const hitZ = checkCollision(shieldGroup.position);
-                shieldGroup.position.z = oldZ;
+                for (let i = 0; i < activeShields.length; i++) {
+                    const currentShield = activeShields[i];
+                    if (!currentShield) continue;
 
-                if (hitX || hitZ) {
-                    if (shieldBouncesLeft > 0) {
-                        shieldBouncesLeft--;
-                        if (hitX) shieldThrowDir.x *= -1;
-                        if (hitZ) shieldThrowDir.z *= -1;
-                        playReloadSound(); // Metallic clink for bounce!
-                        // Move safely along new vector this frame
-                        shieldGroup.position.x += shieldThrowDir.x * moveDist;
-                        shieldGroup.position.z += shieldThrowDir.z * moveDist;
-                    } else {
-                        shieldState = 'returning'; // Hit a wall without bounces left
+                    if (shieldState === 'thrown') {
+                        // Penetrating Damage
+                        enemies.forEach(e => {
+                            if (e.position.distanceTo(currentShield.mesh.position) < 1.5 && !currentShield.hits.includes(e)) {
+                                currentShield.hits.push(e);
+                                damageEnemy(e, 2, true); // Shield deals 2 base damage AND breaks armor
+                            }
+                        });
+
+                        // Ricochet Physics & Collision
+                        const oldX = currentShield.mesh.position.x;
+                        const oldZ = currentShield.mesh.position.z;
+                        
+                        currentShield.mesh.position.x += currentShield.dir.x * moveDist;
+                        const hitX = checkCollision(currentShield.mesh.position);
+                        currentShield.mesh.position.x = oldX;
+
+                        currentShield.mesh.position.z += currentShield.dir.z * moveDist;
+                        const hitZ = checkCollision(currentShield.mesh.position);
+                        currentShield.mesh.position.z = oldZ;
+
+                        if (hitX || hitZ) {
+                            if (currentShield.bouncesLeft > 0) {
+                                currentShield.bouncesLeft--;
+                                if (hitX) currentShield.dir.x *= -1;
+                                if (hitZ) currentShield.dir.z *= -1;
+                                playReloadSound(); // Metallic clink for bounce!
+                                // Move safely along new vector this frame
+                                currentShield.mesh.position.x += currentShield.dir.x * moveDist;
+                                currentShield.mesh.position.z += currentShield.dir.z * moveDist;
+                            } else {
+                                shieldState = 'returning'; // Turn ALL shields around
+                            }
+                        } else {
+                            // Normal movement
+                            currentShield.mesh.position.x += currentShield.dir.x * moveDist;
+                            currentShield.mesh.position.z += currentShield.dir.z * moveDist;
+                        }
+                    } else if (shieldState === 'returning') {
+                        const returnDir = new THREE.Vector3().subVectors(playerPos, currentShield.mesh.position).normalize();
+                        currentShield.mesh.position.addScaledVector(returnDir, 50 * delta); // Fly back faster
+                        
+                        if (currentShield.mesh.position.distanceTo(playerPos) < 1.0) {
+                            scene.remove(currentShield.mesh);
+                            activeShields[i] = null;
+                            livingShieldsCount--;
+                        }
                     }
-                } else {
-                    // Normal movement
-                    shieldGroup.position.x += shieldThrowDir.x * moveDist;
-                    shieldGroup.position.z += shieldThrowDir.z * moveDist;
+                    
+                    if (currentShield) {
+                        currentShield.mesh.rotation.set(-Math.PI / 2, 0, currentShield.mesh.rotation.z + (15 * delta));
+                    }
                 }
-                
-                // Maintain frisbee spin
-                shieldGroup.rotation.set(-Math.PI / 2, 0, shieldGroup.rotation.z + (15 * delta));
-            } else if (shieldState === 'returning') {
-                const returnDir = new THREE.Vector3().subVectors(playerPos, shieldGroup.position).normalize();
-                shieldGroup.position.addScaledVector(returnDir, 40 * delta); // Fly back faster
-                shieldGroup.rotation.set(-Math.PI / 2, 0, shieldGroup.rotation.z + (15 * delta)); // Maintain frisbee spin
 
-                if (shieldGroup.position.distanceTo(playerPos) < 1.5) {
+                // If all shields returned
+                activeShields = activeShields.filter(s => s !== null);
+                if (activeShields.length === 0 && shieldState === 'returning') {
                     shieldState = 'idle';
-                    scene.remove(shieldGroup);
-                    camera.add(shieldGroup);
-                    shieldGroup.position.set(0, 0, -0.6); // Start returning from center loosely
+                    shieldGroup.visible = true; // Unhide original model
                 }
-            }
+            } 
         }
 
         // Weapon Animations

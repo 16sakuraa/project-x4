@@ -73,6 +73,17 @@ shieldGroup.add(shieldMesh);
 shieldGroup.position.set(-0.4, -0.3, -0.6);
 camera.add(shieldGroup);
 
+// ---- INDICATOR ARROW ----
+const indicatorGroup = new THREE.Group();
+const indicatorGeom = new THREE.ConeGeometry(0.05, 0.2, 8);
+const indicatorMat = new THREE.MeshBasicMaterial({ color: 0xffff00, depthTest: false }); // Render over walls
+const indicatorMesh = new THREE.Mesh(indicatorGeom, indicatorMat);
+indicatorMesh.rotation.x = Math.PI / 2; // Face forward along Z axis
+indicatorGroup.add(indicatorMesh);
+indicatorGroup.position.set(0, 0.35, -1); // Top of screen
+indicatorGroup.visible = false;
+camera.add(indicatorGroup);
+
 // ---- UI REGISTRY ----
 const blockMenu = document.getElementById('instructions');
 const scoreDisplay = document.getElementById('score-display');
@@ -695,6 +706,24 @@ function animate() {
                 }
             }
         });
+
+        // Final Enemies Radar Indicator
+        if (enemies.length > 0 && enemies.length < 3) {
+            indicatorGroup.visible = true;
+            let closestEnemy = enemies[0];
+            let minDist = playerPos.distanceTo(closestEnemy.position);
+            for (let i = 1; i < enemies.length; i++) {
+                const eDist = playerPos.distanceTo(enemies[i].position);
+                if (eDist < minDist) {
+                    minDist = eDist;
+                    closestEnemy = enemies[i];
+                }
+            }
+            // Orbits the group perfectly toward the target in world space coordinates
+            indicatorGroup.lookAt(closestEnemy.position);
+        } else {
+            indicatorGroup.visible = false;
+        }
 
         // Health Pack Logic
         for (let i = healthPacks.length - 1; i >= 0; i--) {

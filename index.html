@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DOOM-like 3D Web Game</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Import map for Three.js so we can use ES modules in the browser -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <div id="ui-container">
+        <div id="crosshair"></div>
+        <div id="instructions" class="overlay">
+            <div class="menu-box">
+                <p>M16</p>
+                <p>Left Click: Shoot</p>
+                <p>Right Click (Hold): Block</p>
+                <p>E: Throw Boomerang Shield</p>
+                <p>W, A, S, D: Move</p>
+                <p>R: Reload</p>
+                <p>B: Open Market / Upgrades</p>
+            </div>
+        </div>
+        <div id="game-over" class="overlay" style="display:none;">
+            <div class="menu-box">
+                <h1>GAME OVER</h1>
+                <p id="final-score">Score: 0</p>
+                <p class="controls">Refresh page to restart</p>
+            </div>
+        </div>
+        <div id="market-screen" class="overlay" style="display:none;">
+            <div class="menu-box">
+                <h1>MARKET</h1>
+                <p class="controls">[ 1 ] Buy 30 Ammo - 50 Score</p>
+                <p class="controls" id="upgrade-text">[ 2 ] Weapon Upgrade - 250 Score</p>
+                <p class="controls" id="shield-buy-text">[ 3 ] Shield Bounce Upgrade - 300 Score</p>
+                <p style="margin-top: 30px;">Click anywhere to resume</p>
+            </div>
+        </div>
+        <div id="hud">
+            <div id="hp">HP: 100/100</div>
+            <div id="shield-ui">Shield: 3/3</div>
+            <div id="round">Round: 1</div>
+            <div id="score">Score: 0</div>
+            <div id="ammo">Ammo: 10/10 | 30</div>
+            <div id="hit-marker" style="display:none;">X</div>
+        </div>
+    </div>
+
+    <!-- Load Game Logic -->
+    <script type="module" src="game.js"></script>
+</body>
+
+</html>
